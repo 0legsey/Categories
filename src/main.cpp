@@ -8,7 +8,7 @@
 
 using namespace std;
 
-/*Описание алгоритма
+/*Описание первого - нерабочего алгоритма
 Проблема:
 При наличии нескольких каталогов для позициий может возникнуть ситуация, когда набор, который на самом деле входит в документ,
 считаться входящим не будет, например:
@@ -29,6 +29,23 @@ kits.txt
 входят товары из этого каталога. При этом важно, что при нахождении товаров этого каталога, будет уменьшаться максимум товаров 
 не только для текущего каталога, но и для всех каталогов в этой позиции. Если каталог с минимальным из максимумов входит в документ -
 забываем про него и рассматриваем оставшиеся каталоги, если не входит - значит набор не содержится в списке.
+*/
+
+/*Описанный выше алгоритм имеет контрпример:
+document.txt
+1 3 "A", "B"
+2 2 "B", "C"
+3 1 "A", "C"
+kits.txt
+"B" 4
+"C" 2
+Сначала С заберёт все товары из второй позиции, хотя могло забрать из третьей и для В не останется товаров, хотя набор входит в документ
+
+Для решения этой проблемы была использована новая метрика, по которой определяется приоритет отбора товаров каталогами - разница между 
+"предложением" - максимально доступным количеством товара для категории и "спросом" - количеством необходимого товара в наборе.
+Теперь в первую очередь выбирает каталог с наименьшим значением этой метрики. Он забирает один товар и далее метрики пересчитываются
+чтобы понять, кто забирает следующим. При этом сначала отбираются товары из позиций, относящихся к одной категории, далее относящиеся
+к двум категоряим, к трём и так далее.
 */
 
 struct Position{
@@ -68,17 +85,6 @@ vector<Position> readPositionsFromFile(fstream& file){
     return positions;
 }
 
-//определяем, какое количество товаров содержится в позициях с одним каталогом
-unordered_map<string, int> calculateUniqueKits(vector<Position> positions){
-    unordered_map<string, int> uniqueKits;
-    for (auto position: positions){
-        if (position.categories.size() == 1){
-            uniqueKits[position.categories[0]] += position.count;
-        }
-    }
-    return uniqueKits;
-}
-
 //считываем kits.txt с наборами
 unordered_map<string, int> readKitsFromFile(fstream& file){
     unordered_map<string, int> kits;
@@ -90,22 +96,6 @@ unordered_map<string, int> readKitsFromFile(fstream& file){
         kits[category] = count;
     }
     return kits;
-}
-
-//проверяем, достаточно ли позиций с одним каталогом
-bool checkIfUniqueKitsAreEnough(unordered_map<string, int>& kits, unordered_map<string, int>& leftPositions){
-    bool flag = 0;
-    for (auto kit: kits){
-        leftPositions[kit.first] -= kit.second;
-        //если какому-то из каталогов не зватает товаров - позже вернём false, но сейчас продолжаем считать количество недостающих товаров
-        if (leftPositions[kit.first] < 0){
-            flag = 1;
-        }
-    }
-    if(flag){
-        return false;
-    }
-    return true;
 }
 
 //находим минимальное значение в словаре
@@ -122,101 +112,93 @@ string findMinValueKey(unordered_map<string, int> unord_map){
     return minKey;
 }
 
-//заполняем результирующий список, здесь учитываются только позиции с одним каталогом
-vector<Position> fillResultingList(vector<Position> positions, unordered_map<string, int> uniqueKits, unordered_map<string, int> leftKits){
-    vector<Position> resultingList;
-    int id, count;
-    string category;
-    for (auto position: positions){
-        id = position.id;
-        count = 0;
-        if (position.categories.size() == 1){
-            //заполняем список пока товаров не будет хватать или они не закончатся, или пока не закончится товар на текущей позиции
-            while(uniqueKits[position.categories[0]] != leftKits[position.categories[0]] && uniqueKits[position.categories[0]] > 0 && position.count != 0){
-                position.count--;
-                count++;
-                uniqueKits[position.categories[0]]--;
-            }
-            if (count > 0){
-                resultingList.push_back({id, count, vector<string>{position.categories[0]}});
-            }
+//проверяем, нужны ли ещё товары
+bool checkIfKitsAreNotEmpty(unordered_map<string, int> kits){
+    bool flag = false;
+    for (auto kit: kits){
+        if (kit.second > 0){
+            flag = true;
         }
     }
-    return resultingList;
+    return flag;
 }
 
-//проверяем, удастся ли заполнить набор с учётом позиций с множеством каталогов, заодно вписываем удовлетворяющие позиции в
-//результирующий список
-bool checkIfInsidePositions(vector<Position> positions, unordered_map<string, int>& uniqueKits, vector<Position>& resultingList){
-    unordered_map<string, int> maxPossibleCounts;
-    //учитываем только те каталоги, которым пока не хватает товаров
-    for (auto kit: uniqueKits){
-        if (kit.second < 0){
-            maxPossibleCounts[kit.first] = 0;
+//основная функция, в которой проверяется вхождение набора в документ
+bool checkIfKitIsInPositions(vector<Position> positions, unordered_map<string, int> kits, vector<Position>& resultPositions){
+    //выполняем алгоритм, пока нам нужны товары
+    while (checkIfKitsAreNotEmpty(kits)){
+        //определяем для каких товаров нам нужно предложение
+        unordered_map<string, int> offers;
+        for (auto kit: kits){
+            if (kit.second != 0){
+                offers[kit.first] = 0;
+            }
         }
-    }
 
-    //определяем возможный максимум товаров для каждой категории
-    for (auto position: positions){
-        if (position.categories.size() > 1){
-            for (string category: position.categories){
-                auto search = maxPossibleCounts.find(category); 
-                if (search != maxPossibleCounts.end()){
-                    maxPossibleCounts[category] += position.count;
+        //заполнеяем предложение
+        for (auto position: positions){
+            for (auto category: position.categories){
+                auto search = offers.find(category);
+                if (search != offers.end()){
+                    offers[category] += position.count;
                 }
             }
         }
-    }
 
-    int n = maxPossibleCounts.size();
+        unordered_map<string, int> metrics;
 
-    int id, count;
+        //вычисляем метрику
+        for (auto offer: offers){
+            metrics[offer.first] = offer.second - kits[offer.first];
+            if (metrics[offer.first] < 0){
+                //если спрос больше предложения - набор не входит в документ
+                return false;
+            }
+        }
 
-    for (int i = 0; i < n; i++){
-        //находим каталог с минимальным максимумом и определяем, достаточно ли для него товаров
-        string minKey = findMinValueKey(maxPossibleCounts);
+        //находим минимальное значение метрики
+        string minKey = findMinValueKey(metrics);
 
-        for (auto& position: positions){
-            id = position.id;
-            count = 0;
-            for (string category: position.categories){
-                if (category == minKey && position.categories.size() > 1){
-                    while (uniqueKits[category] != 0 && maxPossibleCounts[category] != 0 && position.count != 0){
+        bool stop = false;
+        //максимально возможное количество каталогов в позиции не может быть больше количества уникальных каталогов в наборе
+        for (int i = 1; i < kits.size() + 1; i++){
+            for (auto& position: positions){
+                if (position.count != 0){
+                    if (position.categories.size() == i){
                         for (string category: position.categories){
-                            auto search = maxPossibleCounts.find(category);
-                            if (search != maxPossibleCounts.end()){
-                                maxPossibleCounts[category]--;
+                            if (category == minKey){
+                                //меняем значения для последующего пересчёта метрик
+                                position.count--;
+                                kits[category]--;
+                                stop = true;
+
+                                //заполняем результирующий список
+                                bool existsInResultList = false;
+                                for (auto& resultPos: resultPositions){
+                                    if (resultPos.id == position.id && resultPos.categories[0] == category){
+                                        existsInResultList = true;
+                                        resultPos.count++;
+                                        break;
+                                    }
+                                }
+
+                                if (!existsInResultList){
+                                    resultPositions.push_back({position.id, 1, vector<string>{category}});
+                                }
+
+                                break;
                             }
                         }
-                        count++;
-                        position.count--;
-                        uniqueKits[category]++;
                     }
-                    break;
                 }
+                if (stop) break;
             }
-
-            //параллельно заполняем результирующий список
-            if(count > 0){
-                resultingList.push_back({id, count, vector<string>{minKey}});
-            }
-
-            //если товаров достаточно - удаляем из словаря текущий каталог и переходим к следующему
-            if (uniqueKits[minKey] == 0){
-                break;
-            }
-
+            if (stop) break;
         }
-
-        //если даже после переборов всех позиций товаров для текущего каталога недостаточно - набор не найден
-        if (uniqueKits[minKey] < 0){
-            return false;
-        }
-
-        auto hs = maxPossibleCounts.extract(minKey);
     }
 
     return true;
+
 }
 
 //сортируем получившийся список по id для удобства
@@ -247,38 +229,20 @@ int main(){
     }
 
     //считываем позиции и наборы с файла и вычисляем количество товаров в позициях с одним каталогом
-    vector<Position> positions;
+    vector<Position> positions, resultPositions;
     positions = readPositionsFromFile(file1);
-
-    auto uniqueKits = calculateUniqueKits(positions);
-    auto leftPositions = uniqueKits; //наборы которые ещё нужно заполнить, отрицательные значения в нём
-    //свидетельствуют о недостатке товаров определённого каталога, изначально они равны количеству товаров с одним каталогом
-
     auto kits = readKitsFromFile(file2);
 
-    //проверяем, хватает ли позиций с одним каталогом для удовлетворения набору
-    //если да - выводим список
-    if (checkIfUniqueKitsAreEnough(kits, leftPositions)){
+    if (checkIfKitIsInPositions(positions, kits, resultPositions)){
         cout << "Набор содержится в документе" << endl;
-        auto resultingList = fillResultingList(positions, uniqueKits, leftPositions);
         cout << "Состав набора:" << endl;
-        for (auto position: resultingList){
-            cout << position.id << " " << position.count << " " << position.categories[0] << endl;
+        sortListById(resultPositions);
+        for (auto resultPos: resultPositions){
+            cout << resultPos.id << " " << resultPos.count << " " << resultPos.categories[0] << endl;
         }
     }
-    //если нет - заполняем итоговый список имеющимися позициями и переходим к позициям с множеством каталогов
     else{
-        auto resultingList = fillResultingList(positions, uniqueKits, leftPositions);
-        if (checkIfInsidePositions(positions, leftPositions, resultingList)){
-            sortListById(resultingList);
-            cout << "Набор содержится в документе" << endl;
-            cout << "Состав набора:" << endl;
-            for (auto position: resultingList){
-                cout << position.id << " " << position.count << " " << position.categories[0] << endl;
-            }
-        }
-        else{
-            cout << "Набор не содержится в документе";
-        }
+        cout << "Набор не содержится в документе" << endl;
     }
+
 }
